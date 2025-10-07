@@ -36,9 +36,6 @@ import json
 import argparse
 import random
 from typing import Dict, List, Optional, Tuple
-from uuid import uuid4
-from datetime import datetime
-import pathlib
 
 # ----------------------------
 # Optional imports: Streamlit (UI)
@@ -110,77 +107,8 @@ PERSONA = (
 DEFAULT_BACKEND_PREFERENCE = ["ibm_qasm_simulator", "simulator_statevector"]
 
 # ----------------------------
-# Utility & Persistence (Chat History)
+# Utility
 # ----------------------------
-
-HISTORY_DIR = os.getenv("CHAT_HISTORY_DIR", ".chat_history")
-
-
-def _ensure_history_dir() -> pathlib.Path:
-    p = pathlib.Path(HISTORY_DIR)
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    return p
-
-
-def _conv_path(conv_id: str) -> pathlib.Path:
-    return _ensure_history_dir() / f"{conv_id}.json"
-
-
-def list_conversations() -> List[Dict[str, str]]:
-    """Return list of {id, title, updated} sorted by updated desc."""
-    _ensure_history_dir()
-    items: List[Dict[str, str]] = []
-    for f in pathlib.Path(HISTORY_DIR).glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            items.append({
-                "id": data.get("id", f.stem),
-                "title": data.get("title", f.stem),
-                "updated": data.get("updated", ""),
-            })
-        except Exception:
-            continue
-    items.sort(key=lambda x: x.get("updated", ""), reverse=True)
-    return items
-
-
-def save_conversation(conv_id: str, title: str, history: List[Dict[str, str]]) -> None:
-    rec = {
-        "id": conv_id,
-        "title": title,
-        "updated": datetime.utcnow().isoformat() + "Z",
-        "history": history[-200:],  # cap to last 200 turns
-    }
-    try:
-        _conv_path(conv_id).write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def load_conversation(conv_id: str) -> Dict[str, object]:
-    try:
-        data = json.loads(_conv_path(conv_id).read_text(encoding="utf-8"))
-        data.setdefault("history", [])
-        return data
-    except Exception:
-        return {"id": conv_id, "title": "Untitled", "history": []}
-
-
-def delete_conversation(conv_id: str) -> None:
-    try:
-        _conv_path(conv_id).unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-def new_conversation(title: str = "New Chat") -> Dict[str, object]:
-    conv_id = uuid4().hex[:12]
-    rec = {"id": conv_id, "title": title, "updated": datetime.utcnow().isoformat() + "Z", "history": []}
-    save_conversation(conv_id, title, [])
-    return rec
 
 def _env_token() -> Optional[str]:
     load_dotenv()
@@ -607,88 +535,33 @@ def _chunk_text(txt: str, max_chars: int = 8000) -> str:
 
 
 # ----------------------------
-# Streamlit UI (only if installed) + Saved Chat History UI
-# ----------------------------
+# Streamlit UI (only if installed)
 # ----------------------------
 
 def run_streamlit_ui(token: Optional[str], backend_choice: Optional[str]):
     st.set_page_config(page_title=APP_TITLE, page_icon="✨", layout="wide")
-    # --- minimal styling inspired by the reference ---
-    st.markdown(
-        """
-        <style>
-        .stApp {background: radial-gradient(1000px 600px at 10% -10%, rgba(99,102,241,0.15), transparent),
-                               radial-gradient(800px 500px at 90% -20%, rgba(16,185,129,0.10), transparent);} 
-        .bubble-user {background:#0ea5e9; color:white; padding:12px 14px; border-radius:16px; border-top-right-radius:4px; max-width:80%;}
-        .bubble-assistant {background:#111827; color:#e5e7eb; padding:12px 14px; border-radius:16px; border-top-left-radius:4px; max-width:80%;}
-        .row {display:flex; margin:8px 0;}
-        .right {justify-content:flex-end;}
-        .left {justify-content:flex-start;}
-        .panel {background: rgba(255,255,255,0.55); backdrop-filter: blur(6px); border:1px solid rgba(0,0,0,0.05); border-radius:16px; padding:16px;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.title("Quantum Chatbot")
+    st.title(APP_TITLE)
     st.caption(PERSONA)
 
-    tabs = st.tabs(["🤖 AI Chat", "🧪 Quantum Lab", "⚛️ Quantum Demos"])  # Three-pane UI
+    tabs = st.tabs(["🤖 AI Chat", "⚛️ Quantum Demos"])  # Two-pane UI
 
     # ---------------- AI CHAT TAB ----------------
     with tabs[0]:
         with st.sidebar:
-            st.subheader("AI & Conversation Settings")
-            # Conversation management
-            if "conv_id" not in st.session_state:
-                # Load latest or create new
-                convs = list_conversations()
-                if convs:
-                    st.session_state.conv_id = convs[0]["id"]
-                else:
-                    st.session_state.conv_id = new_conversation()["id"]
-            convs = list_conversations()
-            conv_titles = {c["id"]: c.get("title", c["id"]) for c in convs}
-            selected = st.selectbox("Conversations", options=list(conv_titles.keys()),
-                                    format_func=lambda i: conv_titles.get(i, i),
-                                    index=max(0, list(conv_titles.keys()).index(st.session_state.conv_id)) if conv_titles else 0)
-            st.session_state.conv_id = selected
-            current = load_conversation(st.session_state.conv_id)
-            default_title = str(current.get("title", "Untitled"))
-            new_title = st.text_input("Title", value=default_title)
-            col_a, col_b, col_c, col_d = st.columns(4)
-            with col_a:
-                if st.button("💾 Save"):
-                    save_conversation(st.session_state.conv_id, new_title, current.get("history", []))
-                    st.success("Saved.")
-            with col_b:
-                if st.button("➕ New"):
-                    rec = new_conversation("New Chat")
-                    st.session_state.conv_id = rec["id"]
-                    current = rec
-            with col_c:
-                if st.button("🗑️ Delete"):
-                    delete_conversation(st.session_state.conv_id)
-                    convs = list_conversations()
-                    st.session_state.conv_id = (convs[0]["id"] if convs else new_conversation()["id"])  
-                    current = load_conversation(st.session_state.conv_id)
-            with col_d:
-                if st.download_button("⬇️ Export", data=json.dumps(current, ensure_ascii=False, indent=2),
-                                       file_name=f"chat_{st.session_state.conv_id}.json", mime="application/json"):
-                    pass
-
-            api_key_in = st.text_input("OpenRouter API Key", type="password",
-                                       help="Prefer env OPENROUTER_API_KEY or Streamlit secrets.")
+            st.subheader("AI Settings")
+            api_key_in = st.text_input("OpenRouter API Key", type="password", help="Store in env OPENROUTER_API_KEY or Streamlit secrets for persistence.")
             model = st.text_input("Model", value=DEFAULT_LLM_MODEL)
-            use_files = st.toggle("Use uploaded files as context", value=True)
             sys_prompt = st.text_area("System Prompt", value=(
-                "You are Qubit, a helpful AI with quantum knowledge. Keep responses concise unless asked."
-            ), height=100)
+                "You are Qubit, a helpful AI with quantum knowledge. "
+                "Answer clearly, cite concepts simply, and when asked you can call quantum demos available in the other tab."
+            ), height=120)
+            st.markdown("**Tip:** Keep secrets out of code; use environment variables or Streamlit secrets.")
 
-        st.write("Upload reference files (txt/md/json/csv/pdf):")
+        st.write("Upload reference files to ground the chat (txt/md/json/csv/pdf):")
         uploaded = st.file_uploader("", type=["txt", "md", "json", "csv", "pdf"], accept_multiple_files=True)
 
-        # session state for chat content and file context
+        if "ai_history" not in st.session_state:
+            st.session_state.ai_history = []  # list of dicts {role, content}
         if "ai_files_ctx" not in st.session_state:
             st.session_state.ai_files_ctx = ""
         if uploaded:
@@ -697,77 +570,29 @@ def run_streamlit_ui(token: Optional[str], backend_choice: Optional[str]):
             for m in infos:
                 st.caption(m)
 
-        # Load current history
-        ai_history: List[Dict[str, str]] = list(current.get("history", []))
-        # Render history
-        for turn in ai_history:
-            role = turn.get("role", "assistant")
-            content = turn.get("content", "")
-            css_class = "right" if role == "user" else "left"
-            bubble = "bubble-user" if role == "user" else "bubble-assistant"
-            st.markdown(f'<div class="row {css_class}"><div class="{bubble}">{content}</div></div>', unsafe_allow_html=True)
+        # Render previous messages
+        for turn in st.session_state.ai_history:
+            with st.chat_message(turn["role"]):
+                st.markdown(turn["content"])
 
-        user_msg = st.chat_input("Type your message…")
+        user_msg = st.chat_input("Ask anything… (files above will ground my answers)")
         if user_msg:
-            ai_history.append({"role": "user", "content": user_msg})
-            with st.spinner("Thinking…"):
-                msgs = []
-                if sys_prompt:
-                    msgs.append({"role": "system", "content": sys_prompt})
-                if use_files and st.session_state.ai_files_ctx:
-                    msgs.append({"role": "system", "content": f"Context from user files:
+            st.session_state.ai_history.append({"role": "user", "content": user_msg})
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking with deep research…"):
+                    messages = []
+                    if sys_prompt:
+                        messages.append({"role": "system", "content": sys_prompt})
+                    if st.session_state.ai_files_ctx:
+                        messages.append({"role": "system", "content": f"Context from user files:\n\n{st.session_state.ai_files_ctx}"})
+                    history_tail = st.session_state.ai_history[-10:]
+                    messages.extend(history_tail)
+                    reply = llm_chat(messages, api_key_in, model)
+                    st.markdown(reply)
+            st.session_state.ai_history.append({"role": "assistant", "content": reply})
 
-{st.session_state.ai_files_ctx}"})
-                # include last turns for context
-                msgs.extend(ai_history[-12:])
-                reply = llm_chat(msgs, api_key_in, model)
-            ai_history.append({"role": "assistant", "content": reply})
-            # persist
-            save_conversation(st.session_state.conv_id, new_title, ai_history)
-            st.rerun()
-
-    # ---------------- Quantum Lab TAB (cards & controls) ----------------
+    # ---------------- QUANTUM TAB ----------------
     with tabs[1]:
-        st.subheader("Quantum Lab")
-        service = _real_service(token) if not MOCK_QUANTUM else None
-        cols = st.columns(3)
-        with cols[0]:
-            st.markdown("### 🔗 Backends")
-            names = list_backends(service)
-            st.write("Available:")
-            st.code("
-".join(names) or "(none)")
-        with cols[1]:
-            st.markdown("### 🫧 Bell State")
-            backend = st.selectbox("Backend", options=names, key="lab_backend_bell")
-            if st.button("Run Bell"):
-                counts = run_bell(service, backend)
-                st.json(counts)
-        with cols[2]:
-            st.markdown("### 🎲 Quantum Random Bits")
-            backend2 = st.selectbox("Backend", options=names, key="lab_backend_rand")
-            n = st.slider("Bits", 1, 32, 8)
-            if st.button("Generate"):
-                bits = quantum_random_bits(service, backend2, n)
-                st.code(bits)
-        st.markdown("---")
-        st.markdown("### 🧭 Grover Demo")
-        gcol1, gcol2, gcol3 = st.columns([1,1,2])
-        with gcol1:
-            backend3 = st.selectbox("Backend", options=names, key="lab_backend_grover")
-        with gcol2:
-            n = st.number_input("Qubits (≤3)", min_value=1, max_value=3, value=3)
-            target = st.text_input("Target bitstring", value="101")
-        with gcol3:
-            if st.button("Run Grover"):
-                try:
-                    counts = grover_demo(service, backend3, int(n), target)
-                    st.json(counts)
-                except Exception as e:
-                    st.error(str(e))
-
-    # ---------------- QUANTUM DEMOS (chat-style commands) ----------------
-    with tabs[2]:
         service = _real_service(token) if not MOCK_QUANTUM else None
         all_backends = list_backends(service)
         default_backend = _choose_backend(service, backend_choice)
@@ -777,20 +602,24 @@ def run_streamlit_ui(token: Optional[str], backend_choice: Optional[str]):
         mode_badge = "MOCK mode (offline OK)" if (MOCK_QUANTUM or backend_name=="mock_simulator") else "REAL IBM Quantum"
         st.info(f"Backend: {backend_name} — {mode_badge}")
 
+        st.write("**Slash Commands**: /backends, /bell, /qrand N, /grover N TARGET, /help")
+
         if "history" not in st.session_state:
-            st.session_state.history = []
+            st.session_state.history = []  # list[(role, text)]
 
         for role, text in st.session_state.history:
-            bubble = "bubble-user" if role == "user" else "bubble-assistant"
-            css_class = "right" if role == "user" else "left"
-            st.markdown(f'<div class="row {css_class}"><div class="{bubble}">{text}</div></div>', unsafe_allow_html=True)
+            with st.chat_message(role):
+                st.markdown(text)
 
         q_msg = st.chat_input("Type a quantum command… (try /bell)", key="quantum_chat_input")
         if q_msg:
             st.session_state.history.append(("user", q_msg))
-            reply = handle_user_message(service, backend_name, q_msg)
+            with st.chat_message("user"):
+                st.markdown(q_msg)
+            with st.chat_message("assistant"):
+                reply = handle_user_message(service, backend_name, q_msg)
+                st.markdown(reply)
             st.session_state.history.append(("assistant", reply))
-            st.rerun()
 
 
 # ----------------------------
